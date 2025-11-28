@@ -3,6 +3,7 @@
 #include <iostream>
 #include <algorithm>
 #include <limits>
+#include <chrono>
 
 namespace {
 // Lightweight stochastic 2-opt improvement. Limited attempts keep runtime modest.
@@ -33,18 +34,31 @@ DpsoTsp::DpsoTsp(const TSPInstance& instance, const Parameters& params)
     : instance(instance), params(params), gbest_cost(std::numeric_limits<double>::max()) {}
 
 void DpsoTsp::solve() {
+    last_timing = {};
+    auto total_start = std::chrono::high_resolution_clock::now();
+    auto init_start = std::chrono::high_resolution_clock::now();
+
     initialize_swarm();
+    auto init_end = std::chrono::high_resolution_clock::now();
+    last_timing.init_ms = std::chrono::duration_cast<std::chrono::microseconds>(init_end - init_start).count() / 1000.0;
+
     convergence_curve.clear();
     convergence_curve.reserve(params.max_iter);
 
     for (int iter = 0; iter < params.max_iter; ++iter) {
         for (Particle& p : swarm) {
+            auto upd_start = std::chrono::high_resolution_clock::now();
             update_particle(p);
+            auto upd_end = std::chrono::high_resolution_clock::now();
+            last_timing.update_ms += std::chrono::duration_cast<std::chrono::microseconds>(upd_end - upd_start).count() / 1000.0;
         }
         convergence_curve.push_back(gbest_cost);
         // Optional: Add logging for each iteration
         // std::cout << "Iter " << iter << ": Best Cost = " << gbest_cost << std::endl;
     }
+
+    auto total_end = std::chrono::high_resolution_clock::now();
+    last_timing.total_ms = std::chrono::duration_cast<std::chrono::microseconds>(total_end - total_start).count() / 1000.0;
 }
 
 void DpsoTsp::initialize_swarm() {
@@ -90,6 +104,7 @@ void DpsoTsp::initialize_swarm() {
 
 void DpsoTsp::update_particle(Particle& p) {
     std::vector<SwapOp> new_velocity;
+    auto move_start = std::chrono::high_resolution_clock::now();
 
     // 1. Inertia component
     int inertia_size = static_cast<int>(p.velocity.size() * params.inertia_weight);
@@ -126,10 +141,17 @@ void DpsoTsp::update_particle(Particle& p) {
         int idx2 = Random::get_int(0, p.position.size() - 1);
         swap_cities(p.position, idx1, idx2);
     }
+    auto move_end = std::chrono::high_resolution_clock::now();
 
     // 7. Local search refinement (stochastic 2-opt) and evaluation
     p.cost = instance.calculate_tour_length(p.position);
     p.cost = two_opt_local_search(p.position, instance, p.cost, params.local_search_attempts);
+    auto eval_end = std::chrono::high_resolution_clock::now();
+
+    double move_ms = std::chrono::duration_cast<std::chrono::microseconds>(move_end - move_start).count() / 1000.0;
+    double eval_ms = std::chrono::duration_cast<std::chrono::microseconds>(eval_end - move_end).count() / 1000.0;
+    last_timing.update_move_ms += move_ms;
+    last_timing.update_eval_ms += eval_ms;
 
     if (p.cost < p.pbest_cost) {
         p.pbest_cost = p.cost;

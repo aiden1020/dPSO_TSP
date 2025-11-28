@@ -36,6 +36,15 @@ public:
         int local_search_attempts = 0; // How many 2-opt attempts after each move
     };
 
+    struct Timing {
+        double total_ms = 0.0;
+        double init_ms = 0.0;
+        double update_ms = 0.0;
+        double update_move_ms = 0.0; // velocity/position update + mutation
+        double update_eval_ms = 0.0; // tour length + local search
+        double comm_ms = 0.0; // kept for parity with MPI timing; always 0 in seq
+    };
+
     DpsoTsp(const TSPInstance& instance, const Parameters& params);
 
     // Run the optimization
@@ -50,6 +59,9 @@ public:
     // Get the convergence curve (best cost at each iteration)
     const std::vector<double>& get_convergence_curve() const { return convergence_curve; }
 
+    // Timing breakdown from the last run
+    Timing get_timing() const { return last_timing; }
+
 private:
     const TSPInstance& instance;
     Parameters params;
@@ -59,6 +71,7 @@ private:
     double gbest_cost;
 
     std::vector<double> convergence_curve;
+    Timing last_timing;
 
     void initialize_swarm();
     void update_particle(Particle& p);
