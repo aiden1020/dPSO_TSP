@@ -1,12 +1,12 @@
 #ifdef USE_MPI
 
-#include "dps_tsp_mpi.h"
+#include "dps_tsp_mpi_v2.h"
 #include "baseline_nn.h"
 #include <algorithm>
 #include <limits>
 #include <chrono>
 
-DpsoTspNaiveMpi::DpsoTspNaiveMpi(const TSPInstance& instance, const Parameters& params, MPI_Comm comm)
+DpsoTspNaiveMpi_v2::DpsoTspNaiveMpi_v2(const TSPInstance& instance, const Parameters& params, MPI_Comm comm)
     : instance(instance), params(params), comm(comm), gbest_cost(std::numeric_limits<double>::max()) {
     MPI_Comm_rank(comm, &world_rank);
     MPI_Comm_size(comm, &world_size);
@@ -16,7 +16,7 @@ DpsoTspNaiveMpi::DpsoTspNaiveMpi(const TSPInstance& instance, const Parameters& 
     local_particle_count = base + (world_rank < rem ? 1 : 0);
 }
 
-void DpsoTspNaiveMpi::initialize_swarm() {
+void DpsoTspNaiveMpi_v2::initialize_swarm() {
     int n = instance.get_dimension();
     local_swarm.clear();
     local_swarm.resize(std::max(0, local_particle_count));
@@ -41,7 +41,7 @@ void DpsoTspNaiveMpi::initialize_swarm() {
     }
 }
 
-void DpsoTspNaiveMpi::update_particle(Particle& p) {
+void DpsoTspNaiveMpi_v2::update_particle(Particle& p) {
     std::vector<SwapOp> new_velocity;
     double move_start = MPI_Wtime();
 
@@ -89,7 +89,7 @@ void DpsoTspNaiveMpi::update_particle(Particle& p) {
     }
 }
 
-void DpsoTspNaiveMpi::solve() {
+void DpsoTspNaiveMpi_v2::solve() {
     timing = {};
     auto total_start = MPI_Wtime();
 
@@ -101,37 +101,75 @@ void DpsoTspNaiveMpi::solve() {
     int n = instance.get_dimension();
     std::vector<int> local_best_tour = gbest_position;
     double local_best_cost = gbest_cost;
+    constexpr int SYNC_INTERVAL = 10;
 
     for (int iter = 0; iter < params.max_iter; ++iter) {
-        local_best_cost = gbest_cost;
-        local_best_tour = gbest_position;
+        // 1. 本地計算
+        local_best_cost = gbest_cost; // 預設為當前已知的最佳
+        local_best_tour = gbest_position; 
+        bool local_improved = false; // 標記本地是否有比 gbest 更強的解
 
         auto update_start = MPI_Wtime();
         for (Particle& p : local_swarm) {
             update_particle(p);
+            // 只有當粒子比"歷史全域最佳"還好時，才考慮更新
             if (p.pbest_cost < local_best_cost) {
                 local_best_cost = p.pbest_cost;
                 local_best_tour = p.pbest_position;
+                local_improved = true;
             }
         }
         auto update_end = MPI_Wtime();
         timing.update_ms += (update_end - update_start) * 1000.0;
 
+        // 減少同步頻率：每 SYNC_INTERVAL 代或最後一代才同步一次
+        if ((iter + 1) % SYNC_INTERVAL != 0 && iter != params.max_iter - 1) {
+            continue;
+        }
+
         auto comm_start = MPI_Wtime();
+
+        // 2. Allreduce: 找出全網最好的 cost
         struct {
             double cost;
             int rank;
-        } local_pair{local_best_cost, world_rank}, global_pair{};
+        } local_pair, global_pair;
+
+        // 這裡很關鍵：如果我沒有比 gbest 好的解，我傳送 max_double 或 gbest_cost
+        // 為了避免浮點數誤差，建議邏輯如下：
+        // 如果本地有進步，送出新 cost；否則送出一個標記值 (如 infinity 或原 gbest)
+        // 但為了簡單起見，直接送 local_best_cost 即可
+        local_pair.cost = local_best_cost;
+        local_pair.rank = world_rank;
 
         MPI_Allreduce(&local_pair, &global_pair, 1, MPI_DOUBLE_INT, MPI_MINLOC, comm);
 
-        std::vector<int> gbest_candidate = gbest_position;
-        if (world_rank == global_pair.rank) {
-            gbest_candidate = local_best_tour;
+        // 3. 條件式 Bcast: 只有當找到比當前 gbest 更優的解時才廣播
+        // 注意：浮點數比較建議用 epsilon，但 TSP 若是整數距離通常無此問題。
+        // 若使用 double 距離，建議: global_pair.cost < gbest_cost - 1e-9
+        if (global_pair.cost < gbest_cost) {
+            
+            int n = instance.get_dimension();
+            std::vector<int> new_gbest_tour(n);
+
+            // 只有贏家需要準備資料
+            if (world_rank == global_pair.rank) {
+                // 注意：這裡必須確保 global_pair.rank 真的是持有該路徑的人
+                // 因為我們上面 local_best_tour 預設是 gbest_position
+                // 如果沒有人進步，global_pair.cost 會等於 gbest_cost
+                // 進到這個 if 代表真的有變小，所以 rank 一定是發現新解的人
+                 new_gbest_tour = local_best_tour;
+            }
+
+            // 廣播路徑 (最耗時的操作，現在只在進步時發生)
+            MPI_Bcast(new_gbest_tour.data(), n, MPI_INT, global_pair.rank, comm);
+
+            // 更新本地存儲
+            gbest_position = new_gbest_tour;
+            gbest_cost = global_pair.cost;
         }
-        MPI_Bcast(gbest_candidate.data(), n, MPI_INT, global_pair.rank, comm);
-        gbest_position = gbest_candidate;
-        gbest_cost = global_pair.cost;
+        // else: 沒人進步，什麼都不用做，省下 Bcast 時間
+
         auto comm_end = MPI_Wtime();
         timing.comm_ms += (comm_end - comm_start) * 1000.0;
     }

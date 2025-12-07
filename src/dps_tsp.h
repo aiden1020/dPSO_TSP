@@ -75,10 +75,14 @@ private:
 
     void initialize_swarm();
     void update_particle(Particle& p);
-
-    // Core dPSO functions
-    std::vector<SwapOp> calculate_diff(const std::vector<int>& from, const std::vector<int>& to);
-    void apply_velocity(std::vector<int>& position, const std::vector<SwapOp>& velocity);
 };
+
+// --- Shared PSO helpers (used by seq and MPI variants) ---
+std::vector<SwapOp> pso_calculate_diff(const std::vector<int>& from, const std::vector<int>& to);
+void pso_apply_velocity(std::vector<int>& position, const std::vector<SwapOp>& velocity);
+double pso_two_opt_local_search(std::vector<int>& tour,
+                                const TSPInstance& instance,
+                                double current_cost,
+                                int attempts);
 
 #endif // DPSO_TSP_H

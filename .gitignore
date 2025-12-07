@@ -1,2 +1,4 @@
 tsp_experiment
 tsp_experiment_mpi
+tsp_experiment_seq
+archive/*

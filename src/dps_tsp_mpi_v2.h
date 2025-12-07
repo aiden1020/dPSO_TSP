@@ -6,22 +6,21 @@
 #include <mpi.h>
 #include "dps_tsp.h"
 
-// Naive parallel (single-swarm) dPSO using MPI. Particles are split across ranks,
-// and each iteration performs one Allreduce (minloc) + one Bcast to share gbest.
-class DpsoTspNaiveMpi {
+// Naive parallel dPSO v2: separate class name to allow side-by-side testing.
+class DpsoTspNaiveMpi_v2 {
 public:
     using Parameters = DpsoTsp::Parameters;
 
     struct Timing {
         double total_ms = 0.0;
         double init_ms = 0.0;
-        double update_ms = 0.0; // local compute (particle updates + evaluation + LS)
+        double update_ms = 0.0;      // local compute
         double update_move_ms = 0.0; // velocity/position update + mutation
         double update_eval_ms = 0.0; // tour length + local search
-        double comm_ms = 0.0;   // MPI collectives per iteration
+        double comm_ms = 0.0;        // collectives
     };
 
-    DpsoTspNaiveMpi(const TSPInstance& instance, const Parameters& params, MPI_Comm comm);
+    DpsoTspNaiveMpi_v2(const TSPInstance& instance, const Parameters& params, MPI_Comm comm);
 
     void solve();
 

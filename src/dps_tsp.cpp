@@ -5,9 +5,8 @@
 #include <limits>
 #include <chrono>
 
-namespace {
-// Lightweight stochastic 2-opt improvement. Limited attempts keep runtime modest.
-double two_opt_local_search(std::vector<int>& tour, const TSPInstance& instance, double current_cost, int attempts) {
+// Lightweight stochastic 2-opt improvement. Used by seq and MPI variants.
+double pso_two_opt_local_search(std::vector<int>& tour, const TSPInstance& instance, double current_cost, int attempts) {
     if (attempts <= 0) return current_cost;
     double best_cost = current_cost;
 
@@ -25,10 +24,47 @@ double two_opt_local_search(std::vector<int>& tour, const TSPInstance& instance,
             reverse_segment(tour, i, j);
         }
     }
-
     return best_cost;
 }
-} // namespace
+
+// Simple implementation to find swaps that transform 'from' tour into 'to' tour
+std::vector<SwapOp> pso_calculate_diff(const std::vector<int>& from, const std::vector<int>& to) {
+    std::vector<SwapOp> diff;
+    if (from == to) return diff;
+
+    std::vector<int> temp_pos = from;
+    int n = static_cast<int>(from.size());
+    std::vector<int> city_to_idx(n);
+
+    for (int i = 0; i < n; ++i) {
+        city_to_idx[temp_pos[i]] = i;
+    }
+
+    for (int i = 0; i < n; ++i) {
+        if (temp_pos[i] != to[i]) {
+            int city_to_find = to[i];
+            int current_city_at_pos = temp_pos[i];
+
+            int idx_to_swap_with = city_to_idx[city_to_find];
+
+            std::swap(temp_pos[i], temp_pos[idx_to_swap_with]);
+            diff.push_back({i, idx_to_swap_with});
+
+            city_to_idx[current_city_at_pos] = idx_to_swap_with;
+            city_to_idx[city_to_find] = i;
+        }
+    }
+    return diff;
+}
+
+void pso_apply_velocity(std::vector<int>& position, const std::vector<SwapOp>& velocity) {
+    for (const auto& op : velocity) {
+        if (op.city_idx1 >= 0 && op.city_idx1 < static_cast<int>(position.size()) &&
+            op.city_idx2 >= 0 && op.city_idx2 < static_cast<int>(position.size())) {
+            std::swap(position[op.city_idx1], position[op.city_idx2]);
+        }
+    }
+}
 
 DpsoTsp::DpsoTsp(const TSPInstance& instance, const Parameters& params)
     : instance(instance), params(params), gbest_cost(std::numeric_limits<double>::max()) {}
@@ -113,14 +149,14 @@ void DpsoTsp::update_particle(Particle& p) {
     }
 
     // 2. Cognitive component
-    std::vector<SwapOp> diff_pbest = calculate_diff(p.position, p.pbest_position);
+    std::vector<SwapOp> diff_pbest = pso_calculate_diff(p.position, p.pbest_position);
     int pbest_swaps_count = static_cast<int>(diff_pbest.size() * params.cognitive_weight * Random::get_double());
     if (pbest_swaps_count > 0 && pbest_swaps_count <= diff_pbest.size()) {
        new_velocity.insert(new_velocity.end(), diff_pbest.begin(), diff_pbest.begin() + pbest_swaps_count);
     }
 
     // 3. Social component
-    std::vector<SwapOp> diff_gbest = calculate_diff(p.position, gbest_position);
+    std::vector<SwapOp> diff_gbest = pso_calculate_diff(p.position, gbest_position);
     int gbest_swaps_count = static_cast<int>(diff_gbest.size() * params.social_weight * Random::get_double());
      if (gbest_swaps_count > 0 && gbest_swaps_count <= diff_gbest.size()) {
         new_velocity.insert(new_velocity.end(), diff_gbest.begin(), diff_gbest.begin() + gbest_swaps_count);
@@ -133,7 +169,7 @@ void DpsoTsp::update_particle(Particle& p) {
     p.velocity = new_velocity;
 
     // 5. Apply new velocity to update position
-    apply_velocity(p.position, p.velocity);
+    pso_apply_velocity(p.position, p.velocity);
 
     // 6. Mutation
     if (Random::get_double() < params.mutation_prob) {
@@ -145,7 +181,7 @@ void DpsoTsp::update_particle(Particle& p) {
 
     // 7. Local search refinement (stochastic 2-opt) and evaluation
     p.cost = instance.calculate_tour_length(p.position);
-    p.cost = two_opt_local_search(p.position, instance, p.cost, params.local_search_attempts);
+    p.cost = pso_two_opt_local_search(p.position, instance, p.cost, params.local_search_attempts);
     auto eval_end = std::chrono::high_resolution_clock::now();
 
     double move_ms = std::chrono::duration_cast<std::chrono::microseconds>(move_end - move_start).count() / 1000.0;
@@ -164,46 +200,5 @@ void DpsoTsp::update_particle(Particle& p) {
     }
 }
 
-// Simple implementation to find swaps that transform 'from' tour into 'to' tour
-std::vector<SwapOp> DpsoTsp::calculate_diff(const std::vector<int>& from, const std::vector<int>& to) {
-    std::vector<SwapOp> diff;
-    if (from == to) return diff;
-
-    std::vector<int> temp_pos = from;
-    int n = from.size();
-    std::vector<int> city_to_idx(n);
-
-    for(int i=0; i<n; ++i) {
-        city_to_idx[temp_pos[i]] = i;
-    }
-
-    for (int i = 0; i < n; ++i) {
-        if (temp_pos[i] != to[i]) {
-            int city_to_find = to[i];
-            int current_city_at_pos = temp_pos[i];
-
-            int idx_to_swap_with = city_to_idx[city_to_find];
-
-            // Perform the swap
-            std::swap(temp_pos[i], temp_pos[idx_to_swap_with]);
-            
-            // Record the swap
-            diff.push_back({i, idx_to_swap_with});
-
-            // Update the mapping
-            city_to_idx[current_city_at_pos] = idx_to_swap_with;
-            city_to_idx[city_to_find] = i;
-        }
-    }
-    return diff;
-}
-
-void DpsoTsp::apply_velocity(std::vector<int>& position, const std::vector<SwapOp>& velocity) {
-    for (const auto& op : velocity) {
-        // Ensure indices are valid before swapping
-        if (op.city_idx1 >= 0 && op.city_idx1 < position.size() &&
-            op.city_idx2 >= 0 && op.city_idx2 < position.size()) {
-            std::swap(position[op.city_idx1], position[op.city_idx2]);
-        }
-    }
-}
+// DpsoTsp no longer defines its own calculate_diff/apply_velocity;
+// it uses the shared pso_* helpers above.

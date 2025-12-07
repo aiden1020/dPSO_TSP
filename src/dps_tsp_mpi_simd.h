@@ -8,7 +8,8 @@
 
 // Naive parallel (single-swarm) dPSO using MPI. Particles are split across ranks,
 // and each iteration performs one Allreduce (minloc) + one Bcast to share gbest.
-class DpsoTspNaiveMpi {
+// This version is intended to be compiled with SIMD flags enabled.
+class DpsoTspNaiveMpiSimd {
 public:
     using Parameters = DpsoTsp::Parameters;
 
@@ -21,14 +22,13 @@ public:
         double comm_ms = 0.0;   // MPI collectives per iteration
     };
 
-    DpsoTspNaiveMpi(const TSPInstance& instance, const Parameters& params, MPI_Comm comm);
+    DpsoTspNaiveMpiSimd(const TSPInstance& instance, const Parameters& params, MPI_Comm comm);
 
     void solve();
 
     const std::vector<int>& get_gbest_position() const { return gbest_position; }
     double get_gbest_cost() const { return gbest_cost; }
     Timing get_timing() const { return timing; }
-    double get_comm_time() const { return timing.comm_ms; }
 
 private:
     const TSPInstance& instance;
@@ -46,6 +46,11 @@ private:
 
     void initialize_swarm();
     void update_particle(Particle& p);
+
+    // Helpers duplicated from sequential dPSO
+    std::vector<SwapOp> calculate_diff(const std::vector<int>& from, const std::vector<int>& to);
+    void apply_velocity(std::vector<int>& position, const std::vector<SwapOp>& velocity);
+    double two_opt_local_search(std::vector<int>& tour, double current_cost);
 };
 
 #endif // USE_MPI

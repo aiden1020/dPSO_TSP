@@ -4,6 +4,7 @@
 #include <sstream>
 #include <cmath>
 #include <limits>
+#include "simd_utils.h"
 
 // TSPLIB specifies rounding to the nearest integer for EUC_2D distances
 int nint(double x) {
@@ -98,6 +99,10 @@ double TSPInstance::calculate_tour_length(const std::vector<int>& tour) const {
     if (tour.size() != n) {
         throw std::invalid_argument("Tour size must match instance dimension.");
     }
+#if defined(USE_TSP_SIMD) && defined(__AVX2__) && defined(__FMA__)
+    // Use AVX2-accelerated on-the-fly Euclidean distance if available and enabled.
+    return calculate_tour_length_avx2(coords, tour);
+#else
     double length = 0.0;
     for (size_t i = 0; i < n; ++i) {
         int city_a = tour[i];
@@ -105,6 +110,7 @@ double TSPInstance::calculate_tour_length(const std::vector<int>& tour) const {
         length += dist_matrix[city_a][city_b];
     }
     return length;
+#endif
 }
 
 double TSPInstance::get_distance(int city1_idx, int city2_idx) const {

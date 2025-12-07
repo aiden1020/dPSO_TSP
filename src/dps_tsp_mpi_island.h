@@ -6,22 +6,24 @@
 #include <mpi.h>
 #include "dps_tsp.h"
 
-// Naive parallel (single-swarm) dPSO using MPI. Particles are split across ranks,
-// and each iteration performs one Allreduce (minloc) + one Bcast to share gbest.
-class DpsoTspNaiveMpi {
+// Island-style MPI dPSO: each rank keeps its own swarm, and periodically migrates top-k tours in a ring.
+class DpsoTspIslandMpi {
 public:
     using Parameters = DpsoTsp::Parameters;
 
     struct Timing {
         double total_ms = 0.0;
         double init_ms = 0.0;
-        double update_ms = 0.0; // local compute (particle updates + evaluation + LS)
+        double update_ms = 0.0;      // local compute
         double update_move_ms = 0.0; // velocity/position update + mutation
         double update_eval_ms = 0.0; // tour length + local search
-        double comm_ms = 0.0;   // MPI collectives per iteration
+        double comm_ms = 0.0;        // migration time
     };
 
-    DpsoTspNaiveMpi(const TSPInstance& instance, const Parameters& params, MPI_Comm comm);
+    // Additional island controls are passed via Parameters:
+    // - migration_interval: sync every k iterations (default 20)
+    // - migration_size: how many top tours to migrate (default 1)
+    DpsoTspIslandMpi(const TSPInstance& instance, const Parameters& params, MPI_Comm comm);
 
     void solve();
 
@@ -37,15 +39,15 @@ private:
     int world_rank = 0;
     int world_size = 1;
 
-    std::vector<Particle> local_swarm;
+    std::vector<Particle> swarm;
     std::vector<int> gbest_position;
     double gbest_cost;
-    int local_particle_count = 0;
-
     Timing timing;
+    int local_particle_count = 0;
 
     void initialize_swarm();
     void update_particle(Particle& p);
+    void migrate_topk(int migration_size);
 };
 
 #endif // USE_MPI

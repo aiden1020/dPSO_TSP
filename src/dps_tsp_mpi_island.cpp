@@ -1,35 +1,34 @@
 #ifdef USE_MPI
 
-#include "dps_tsp_mpi.h"
+#include "dps_tsp_mpi_island.h"
 #include "baseline_nn.h"
 #include <algorithm>
 #include <limits>
 #include <chrono>
 
-DpsoTspNaiveMpi::DpsoTspNaiveMpi(const TSPInstance& instance, const Parameters& params, MPI_Comm comm)
+DpsoTspIslandMpi::DpsoTspIslandMpi(const TSPInstance& instance, const Parameters& params, MPI_Comm comm)
     : instance(instance), params(params), comm(comm), gbest_cost(std::numeric_limits<double>::max()) {
     MPI_Comm_rank(comm, &world_rank);
     MPI_Comm_size(comm, &world_size);
-
     int base = params.swarm_size / world_size;
     int rem = params.swarm_size % world_size;
     local_particle_count = base + (world_rank < rem ? 1 : 0);
 }
 
-void DpsoTspNaiveMpi::initialize_swarm() {
+void DpsoTspIslandMpi::initialize_swarm() {
     int n = instance.get_dimension();
-    local_swarm.clear();
-    local_swarm.resize(std::max(0, local_particle_count));
+    swarm.clear();
+    swarm.resize(std::max(0, local_particle_count));
 
-    // All ranks build the same NN tour for seeding; cheap and avoids extra broadcast.
+    // Seed one NN tour for a good starting point.
     std::vector<int> nn_tour = solve_nn(instance, 0);
     double nn_cost = instance.calculate_tour_length(nn_tour);
     gbest_position = nn_tour;
     gbest_cost = nn_cost;
 
     for (int i = 0; i < local_particle_count; ++i) {
-        Particle& p = local_swarm[i];
-        if (world_rank == 0 && i == 0) {
+        Particle& p = swarm[i];
+        if (i == 0 && world_rank == 0) {
             p.position = nn_tour;
         } else {
             p.position = generate_random_tour(n);
@@ -38,10 +37,15 @@ void DpsoTspNaiveMpi::initialize_swarm() {
         p.pbest_position = p.position;
         p.pbest_cost = p.cost;
         p.velocity.clear();
+
+        if (p.cost < gbest_cost) {
+            gbest_cost = p.cost;
+            gbest_position = p.position;
+        }
     }
 }
 
-void DpsoTspNaiveMpi::update_particle(Particle& p) {
+void DpsoTspIslandMpi::update_particle(Particle& p) {
     std::vector<SwapOp> new_velocity;
     double move_start = MPI_Wtime();
 
@@ -89,7 +93,60 @@ void DpsoTspNaiveMpi::update_particle(Particle& p) {
     }
 }
 
-void DpsoTspNaiveMpi::solve() {
+void DpsoTspIslandMpi::migrate_topk(int migration_size) {
+    if (world_size == 1 || migration_size <= 0) return;
+
+    int n = instance.get_dimension();
+    migration_size = std::min(migration_size, static_cast<int>(swarm.size()));
+    if (migration_size == 0) return;
+
+    // Select top-k pbest tours.
+    std::vector<std::pair<double, int>> scores;
+    scores.reserve(swarm.size());
+    for (int i = 0; i < static_cast<int>(swarm.size()); ++i) {
+        scores.push_back({swarm[i].pbest_cost, i});
+    }
+    std::partial_sort(scores.begin(), scores.begin() + migration_size, scores.end(),
+                      [](const auto& a, const auto& b) { return a.first < b.first; });
+
+    std::vector<int> send_buffer(n * migration_size);
+    for (int k = 0; k < migration_size; ++k) {
+        const auto& tour = swarm[scores[k].second].pbest_position;
+        std::copy(tour.begin(), tour.end(), send_buffer.begin() + k * n);
+    }
+
+    std::vector<int> recv_buffer(n * migration_size, -1);
+    int send_to = (world_rank + 1) % world_size;
+    int recv_from = (world_rank - 1 + world_size) % world_size;
+
+    MPI_Sendrecv(send_buffer.data(), send_buffer.size(), MPI_INT, send_to, 0,
+                 recv_buffer.data(), recv_buffer.size(), MPI_INT, recv_from, 0,
+                 comm, MPI_STATUS_IGNORE);
+
+    // Incorporate received tours if they improve gbest/pbest.
+    for (int k = 0; k < migration_size; ++k) {
+        std::vector<int> tour(recv_buffer.begin() + k * n, recv_buffer.begin() + (k + 1) * n);
+        if (tour.size() != static_cast<size_t>(n)) continue;
+        double cost = instance.calculate_tour_length(tour);
+
+        // Replace worst particle if improved.
+        auto worst_it = std::max_element(swarm.begin(), swarm.end(),
+                                         [](const Particle& a, const Particle& b) { return a.pbest_cost < b.pbest_cost; });
+        if (worst_it != swarm.end() && cost < worst_it->pbest_cost) {
+            worst_it->position = tour;
+            worst_it->velocity.clear();
+            worst_it->cost = cost;
+            worst_it->pbest_position = tour;
+            worst_it->pbest_cost = cost;
+        }
+        if (cost < gbest_cost) {
+            gbest_cost = cost;
+            gbest_position = std::move(tour);
+        }
+    }
+}
+
+void DpsoTspIslandMpi::solve() {
     timing = {};
     auto total_start = MPI_Wtime();
 
@@ -98,42 +155,27 @@ void DpsoTspNaiveMpi::solve() {
     auto init_end = MPI_Wtime();
     timing.init_ms = (init_end - init_start) * 1000.0;
 
-    int n = instance.get_dimension();
-    std::vector<int> local_best_tour = gbest_position;
-    double local_best_cost = gbest_cost;
+    constexpr int migration_interval = 20;
+    int migration_size = 1;
 
     for (int iter = 0; iter < params.max_iter; ++iter) {
-        local_best_cost = gbest_cost;
-        local_best_tour = gbest_position;
-
         auto update_start = MPI_Wtime();
-        for (Particle& p : local_swarm) {
+        for (Particle& p : swarm) {
             update_particle(p);
-            if (p.pbest_cost < local_best_cost) {
-                local_best_cost = p.pbest_cost;
-                local_best_tour = p.pbest_position;
+            if (p.pbest_cost < gbest_cost) {
+                gbest_cost = p.pbest_cost;
+                gbest_position = p.pbest_position;
             }
         }
         auto update_end = MPI_Wtime();
         timing.update_ms += (update_end - update_start) * 1000.0;
 
-        auto comm_start = MPI_Wtime();
-        struct {
-            double cost;
-            int rank;
-        } local_pair{local_best_cost, world_rank}, global_pair{};
-
-        MPI_Allreduce(&local_pair, &global_pair, 1, MPI_DOUBLE_INT, MPI_MINLOC, comm);
-
-        std::vector<int> gbest_candidate = gbest_position;
-        if (world_rank == global_pair.rank) {
-            gbest_candidate = local_best_tour;
+        if ((iter + 1) % migration_interval == 0 || iter == params.max_iter - 1) {
+            auto comm_start = MPI_Wtime();
+            migrate_topk(migration_size);
+            auto comm_end = MPI_Wtime();
+            timing.comm_ms += (comm_end - comm_start) * 1000.0;
         }
-        MPI_Bcast(gbest_candidate.data(), n, MPI_INT, global_pair.rank, comm);
-        gbest_position = gbest_candidate;
-        gbest_cost = global_pair.cost;
-        auto comm_end = MPI_Wtime();
-        timing.comm_ms += (comm_end - comm_start) * 1000.0;
     }
 
     auto total_end = MPI_Wtime();
