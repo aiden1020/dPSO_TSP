@@ -1,10 +1,14 @@
-# dPSO-TSP C++ Experimental Platform
+# dPSO-TSP: MPI Model Optimization for TSP
 
-This document describes the goals, structure, build, and execution methods of the dPSO-TSP experimental platform. Content is updated to reflect the latest implementation.
+This repository provides a C++ experimental platform for evaluating and optimizing different MPI models for the Discrete Particle Swarm Optimization (dPSO) algorithm on the Symmetric Traveling Salesman Problem (TSP). The main focus is on analyzing and reducing communication cost as the number of processes (p) increases, and comparing the performance impact of various parallelization strategies.
 
 ## 1. Project Goals
 
-This project aims to build a high-performance C++ experimental platform for researching, evaluating, and comparing the efficiency of **Discrete Particle Swarm Optimization (dPSO)** in solving the **Symmetric Traveling Salesman Problem (TSP)**, including both sequential and parallel (MPI) versions.
+The primary goal of this project is to systematically experiment with multiple MPI-based parallel models for dPSO, aiming to:
+- Investigate how communication overhead scales with increasing process count (p)
+- Compare sequential and parallel (MPI) dPSO implementations
+- Evaluate the effectiveness of different MPI strategies (e.g., naive, lazy-sync, island model) in minimizing communication cost and maximizing speedup
+- Provide a reproducible platform for benchmarking and visualizing TSP solution quality and runtime performance
 
 ## 2. Project Structure
 
