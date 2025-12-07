@@ -135,3 +135,22 @@ Below are results for `kroB200` and `u2319` TSP instances under different algori
 | lazy-sync MPI        | 18.70     | 18.29     | 690.43          | 7.1×           |
 | Island MPI (Ours)    | 17.06     | 15.97     | 492.01          | 9.9×           |
 
+### Visualization
+
+Below are key visualizations from the `results/` directory, illustrating the impact of different MPI models on performance, efficiency, and solution quality:
+
+
+
+#### Side-by-side Comparisons
+
+| Speedup vs Number of Processes | Parallel Efficiency vs Number of Processes |
+| --- | --- |
+| <img src="results/u2319_speedup_SIMD_nodes4.png" width="420" alt="Speedup vs Number of Processes" /> | <img src="results/u2319_efficiency_SIMD_nodes4.png" width="420" alt="Parallel Efficiency vs Number of Processes" /> |
+
+#### Solution Quality vs Speed
+
+<img src="results/u2319_quality_vs_speed_SIMD_nodes4_p8.png" width="520" alt="Solution Quality vs Speed" />
+
+#### Micro-architectural Drivers of Superlinear Speedup  
+
+<img src="results/perf_analysis_3way.png" width="520" alt="Micro-architectural Drivers of Superlinear Speedup" />
